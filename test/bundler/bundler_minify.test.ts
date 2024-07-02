@@ -1,6 +1,5 @@
-import assert from "assert";
-import { itBundled, testForFile } from "./expectBundled";
-var { describe, test, expect } = testForFile(import.meta.path);
+import { itBundled } from "./expectBundled";
+import { describe, expect } from "bun:test";
 
 describe("bundler", () => {
   itBundled("minify/TemplateStringFolding", {
@@ -122,8 +121,83 @@ describe("bundler", () => {
     run: { stdout: "4 2 3\n4 5 3\n4 5 6" },
     onAfterBundle(api) {
       const code = api.readFile("/out.js");
-      assert([...code.matchAll(/var /g)].length === 1, "expected only 1 variable declaration statement");
+      expect([...code.matchAll(/var /g)]).toHaveLength(1);
     },
+  });
+  itBundled("minify/Infinity", {
+    files: {
+      "/entry.js": /* js */ `
+        capture(Infinity);
+        capture(-Infinity);
+        capture(Infinity + 1);
+        capture(-Infinity - 1);
+        capture(Infinity / 0);
+        capture(-Infinity / 0);
+        capture(Infinity * 0);
+        capture(-Infinity * 0);
+        capture(Infinity % 1);
+        capture(-Infinity % 1);
+        capture(Infinity ** 1);
+        capture(-(Infinity ** 1));
+        capture(~Infinity);
+        capture(~-Infinity);
+      `,
+    },
+    capture: [
+      "1 / 0",
+      "-1 / 0",
+      "1 / 0",
+      "-1 / 0",
+      "1 / 0",
+      "-1 / 0",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "1 / 0",
+      "-1 / 0",
+      "~(1 / 0)",
+      "~(-1 / 0)",
+    ],
+    minifySyntax: true,
+  });
+  itBundled("minify+whitespace/Infinity", {
+    files: {
+      "/entry.js": /* js */ `
+        capture(Infinity);
+        capture(-Infinity);
+        capture(Infinity + 1);
+        capture(-Infinity - 1);
+        capture(Infinity / 0);
+        capture(-Infinity / 0);
+        capture(Infinity * 0);
+        capture(-Infinity * 0);
+        capture(Infinity % 1);
+        capture(-Infinity % 1);
+        capture(Infinity ** 1);
+        capture((-Infinity) ** 2);
+        capture(~Infinity);
+        capture(~-Infinity);
+      `,
+    },
+    capture: [
+      "1/0",
+      "-1/0",
+      "1/0",
+      "-1/0",
+      "1/0",
+      "-1/0",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "1/0",
+      "1/0",
+      "~(1/0)",
+      "~(-1/0)",
+    ],
+    minifySyntax: true,
+    minifyWhitespace: true,
   });
   itBundled("minify/InlineArraySpread", {
     files: {

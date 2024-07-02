@@ -48,6 +48,23 @@ pub const ResolveMessage = struct {
         }
     }
 
+    // https://github.com/oven-sh/bun/issues/2375#issuecomment-2121530202
+    pub fn getColumn(this: *ResolveMessage, _: *JSC.JSGlobalObject) callconv(.C) JSC.JSValue {
+        if (this.msg.data.location) |location| {
+            return JSC.JSValue.jsNumber(@max(location.column - 1, 0));
+        }
+
+        return JSC.JSValue.jsNumber(@as(i32, 0));
+    }
+
+    pub fn getLine(this: *ResolveMessage, _: *JSC.JSGlobalObject) callconv(.C) JSC.JSValue {
+        if (this.msg.data.location) |location| {
+            return JSC.JSValue.jsNumber(@max(location.line - 1, 0));
+        }
+
+        return JSC.JSValue.jsNumber(@as(i32, 0));
+    }
+
     pub fn fmt(allocator: std.mem.Allocator, specifier: string, referrer: string, err: anyerror) !string {
         switch (err) {
             error.ModuleNotFound => {
@@ -81,7 +98,7 @@ pub const ResolveMessage = struct {
         var str = ZigString.init(text);
         str.setOutputEncoding();
         if (str.isUTF8()) {
-            const out = str.toValueGC(globalThis);
+            const out = str.toJS(globalThis);
             default_allocator.free(text);
             return out;
         }
@@ -125,7 +142,7 @@ pub const ResolveMessage = struct {
         _: *JSC.CallFrame,
     ) callconv(.C) JSC.JSValue {
         var object = JSC.JSValue.createEmptyObject(globalThis, 7);
-        object.put(globalThis, ZigString.static("name"), ZigString.init("ResolveMessage").toValueGC(globalThis));
+        object.put(globalThis, ZigString.static("name"), ZigString.init("ResolveMessage").toJS(globalThis));
         object.put(globalThis, ZigString.static("position"), this.getPosition(globalThis));
         object.put(globalThis, ZigString.static("message"), this.getMessage(globalThis));
         object.put(globalThis, ZigString.static("level"), this.getLevel(globalThis));
@@ -161,28 +178,28 @@ pub const ResolveMessage = struct {
         this: *ResolveMessage,
         globalThis: *JSC.JSGlobalObject,
     ) callconv(.C) JSC.JSValue {
-        return ZigString.init(this.msg.data.text).toValueGC(globalThis);
+        return ZigString.init(this.msg.data.text).toJS(globalThis);
     }
 
     pub fn getLevel(
         this: *ResolveMessage,
         globalThis: *JSC.JSGlobalObject,
     ) callconv(.C) JSC.JSValue {
-        return ZigString.init(this.msg.kind.string()).toValueGC(globalThis);
+        return ZigString.init(this.msg.kind.string()).toJS(globalThis);
     }
 
     pub fn getSpecifier(
         this: *ResolveMessage,
         globalThis: *JSC.JSGlobalObject,
     ) callconv(.C) JSC.JSValue {
-        return ZigString.init(this.msg.metadata.resolve.specifier.slice(this.msg.data.text)).toValueGC(globalThis);
+        return ZigString.init(this.msg.metadata.resolve.specifier.slice(this.msg.data.text)).toJS(globalThis);
     }
 
     pub fn getImportKind(
         this: *ResolveMessage,
         globalThis: *JSC.JSGlobalObject,
     ) callconv(.C) JSC.JSValue {
-        return ZigString.init(this.msg.metadata.resolve.import_kind.label()).toValueGC(globalThis);
+        return ZigString.init(this.msg.metadata.resolve.import_kind.label()).toJS(globalThis);
     }
 
     pub fn getReferrer(
@@ -190,7 +207,7 @@ pub const ResolveMessage = struct {
         globalThis: *JSC.JSGlobalObject,
     ) callconv(.C) JSC.JSValue {
         if (this.referrer) |referrer| {
-            return ZigString.init(referrer.text).toValueGC(globalThis);
+            return ZigString.init(referrer.text).toJS(globalThis);
         } else {
             return JSC.JSValue.jsNull();
         }

@@ -92,9 +92,11 @@ pub const ProcessHandle = struct {
 
         if (Environment.isPosix) {
             if (spawned.stdout) |stdout| {
+                _ = bun.sys.setNonblocking(stdout);
                 try handle.stdout.start(stdout, true).unwrap();
             }
             if (spawned.stderr) |stderr| {
+                _ = bun.sys.setNonblocking(stderr);
                 try handle.stderr.start(stderr, true).unwrap();
             }
         } else {
@@ -102,11 +104,16 @@ pub const ProcessHandle = struct {
             try handle.stderr.startWithCurrentPipe().unwrap();
         }
 
+        this.process = .{ .ptr = process };
         process.setExitHandler(handle);
 
-        try process.watch(this.state.event_loop).unwrap();
-
-        this.process = .{ .ptr = process };
+        switch (process.watchOrReap()) {
+            .result => {},
+            .err => |err| {
+                if (!process.hasExited())
+                    process.onExit(.{ .err = err }, &std.mem.zeroes(bun.spawn.Rusage));
+            },
+        }
     }
 
     pub fn onReadChunk(this: *This, chunk: []const u8, hasMore: bun.io.ReadState) bool {
@@ -351,15 +358,25 @@ const State = struct {
         for (this.handles) |*handle| {
             if (handle.process) |*proc| {
                 // if we get an error here we simply ignore it
-                _ = proc.ptr.kill(std.os.SIG.INT);
+                _ = proc.ptr.kill(std.posix.SIG.INT);
             }
         }
     }
 
-    pub fn finalize(this: *This) void {
+    pub fn finalize(this: *This) u8 {
         if (this.aborted) {
             this.redraw(true) catch {};
         }
+        for (this.handles) |handle| {
+            if (handle.process) |proc| {
+                switch (proc.status) {
+                    .exited => |exited| if (exited.code != 0) return exited.code,
+                    .signaled => |signal| return signal.toExitCode() orelse 1,
+                    else => return 1,
+                }
+            }
+        }
+        return 0;
     }
 };
 
@@ -368,7 +385,7 @@ const AbortHandler = struct {
 
     var should_abort = false;
 
-    fn posixSignalHandler(sig: i32, info: *const std.os.siginfo_t, _: ?*const anyopaque) callconv(.C) void {
+    fn posixSignalHandler(sig: i32, info: *const std.posix.siginfo_t, _: ?*const anyopaque) callconv(.C) void {
         _ = sig;
         _ = info;
         should_abort = true;
@@ -384,13 +401,13 @@ const AbortHandler = struct {
 
     pub fn install() void {
         if (Environment.isPosix) {
-            const action = std.os.Sigaction{
+            const action = std.posix.Sigaction{
                 .handler = .{ .sigaction = AbortHandler.posixSignalHandler },
-                .mask = std.os.empty_sigset,
-                .flags = std.os.SA.SIGINFO | std.os.SA.RESTART | std.os.SA.RESETHAND,
+                .mask = std.posix.empty_sigset,
+                .flags = std.posix.SA.SIGINFO | std.posix.SA.RESTART | std.posix.SA.RESETHAND,
             };
             // if we can't set the handler, we just ignore it
-            std.os.sigaction(std.os.SIG.INT, &action, null) catch |err| {
+            std.posix.sigaction(std.posix.SIG.INT, &action, null) catch |err| {
                 if (Environment.isDebug) {
                     Output.warn("Failed to set abort handler: {s}\n", .{@errorName(err)});
                 }
@@ -460,14 +477,11 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
             continue;
         };
 
-        const matches = if (filter_instance.has_name_filters)
-            filter_instance.matchesPathName(path, pkgjson.name)
-        else
-            filter_instance.matchesPath(path);
-
-        if (!matches) continue;
-
         const pkgscripts = pkgjson.scripts orelse continue;
+
+        if (!filter_instance.matches(path, pkgjson.name))
+            continue;
+
         const PATH = try RunCommand.configurePathForRunWithPackageJsonDir(ctx, dirpath, &this_bundler, null, dirpath, ctx.debug.run_in_bun);
 
         for (&[3][]const u8{ pre_script_name, script_name, post_script_name }) |name| {
@@ -554,9 +568,10 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
     for (state.handles) |*handle| {
         var iter = handle.config.deps.map.iterator();
         while (iter.next()) |entry| {
-            var alloc = std.heap.stackFallback(256, ctx.allocator);
-            const buf = try alloc.get().alloc(u8, entry.key_ptr.len());
-            defer alloc.get().free(buf);
+            var sfa = std.heap.stackFallback(256, ctx.allocator);
+            const alloc = sfa.get();
+            const buf = try alloc.alloc(u8, entry.key_ptr.len());
+            defer alloc.free(buf);
             const name = entry.key_ptr.slice(buf);
             // is it a workspace dependency?
             if (map.get(name)) |pkgs| {
@@ -617,9 +632,9 @@ pub fn runScriptsWithFilter(ctx: Command.Context) !noreturn {
         event_loop.tickOnce(&state);
     }
 
-    state.finalize();
+    const status = state.finalize();
 
-    Global.exit(0);
+    Global.exit(status);
 }
 
 fn hasCycle(current: *ProcessHandle) bool {

@@ -18,6 +18,7 @@
 #include "libusockets.h"
 #include "internal/internal.h"
 #include <stdlib.h>
+#include <time.h>
 
 #if defined(LIBUS_USE_EPOLL) || defined(LIBUS_USE_KQUEUE)
 
@@ -32,7 +33,7 @@ void Bun__internal_dispatch_ready_poll(void* loop, void* poll);
 #include <string.h> // memset
 #endif
 
-void us_loop_run_bun_tick(struct us_loop_t *loop, int64_t timeoutMs);
+void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout);
 
 /* Pointer tags are used to indicate a Bun pointer versus a uSockets pointer */
 #define UNSET_BITS_49_UNTIL_64 0x0000FFFFFFFFFFFF
@@ -89,12 +90,12 @@ LIBUS_SOCKET_DESCRIPTOR us_poll_fd(struct us_poll_t *p) {
 
 /* Returns any of listen socket, socket, shut down socket or callback */
 int us_internal_poll_type(struct us_poll_t *p) {
-    return p->state.poll_type & 3;
+    return p->state.poll_type & POLL_TYPE_KIND_MASK;
 }
 
 /* Bug: doesn't really SET, rather read and change, so needs to be inited first! */
 void us_internal_poll_set_type(struct us_poll_t *p, int poll_type) {
-    p->state.poll_type = poll_type | (p->state.poll_type & 12);
+    p->state.poll_type = poll_type | (p->state.poll_type & POLL_TYPE_POLLING_MASK);
 }
 
 /* Timer */
@@ -156,12 +157,18 @@ void us_loop_run(struct us_loop_t *loop) {
                 int events = loop->ready_polls[loop->current_ready_poll].events;
                 const int error = events & (EPOLLERR | EPOLLHUP);
 #else
-                /* EVFILT_READ, EVFILT_TIME, EVFILT_USER are all mapped to LIBUS_SOCKET_READABLE */
-                int events = LIBUS_SOCKET_READABLE;
-                if (loop->ready_polls[loop->current_ready_poll].filter == EVFILT_WRITE) {
-                    events = LIBUS_SOCKET_WRITABLE;
-                }
-                const int error = loop->ready_polls[loop->current_ready_poll].flags & (EV_ERROR | EV_EOF);
+                const struct kevent64_s* current_kevent = &loop->ready_polls[loop->current_ready_poll];
+                const int16_t filter = current_kevent->filter;
+                const uint16_t flags = current_kevent->flags;
+                const uint32_t fflags = current_kevent->fflags;
+
+                // > Multiple events which trigger the filter do not result in multiple kevents being placed on the kqueue
+                // > Instead, the filter will aggregate the events into a single kevent struct
+                // Note: EV_ERROR only sets the error in data as part of changelist. Not in this call!
+                int events = 0
+                    | ((filter & EVFILT_READ) ? LIBUS_SOCKET_READABLE : 0)
+                    | ((filter & EVFILT_WRITE) ? LIBUS_SOCKET_WRITABLE : 0);
+                const int error = (flags & (EV_ERROR | EV_EOF)) ? ((int)fflags || 1) : 0;
 #endif
                 /* Always filter all polls by what they actually poll for (callback polls always poll for readable) */
                 events &= us_poll_events(poll);
@@ -176,7 +183,14 @@ void us_loop_run(struct us_loop_t *loop) {
     }
 }
 
-void us_loop_run_bun_tick(struct us_loop_t *loop, int64_t timeoutMs) {
+#if defined(LIBUS_USE_EPOLL) 
+
+// static int has_epoll_pwait2 = 0;
+// TODO:
+
+#endif
+
+void us_loop_run_bun_tick(struct us_loop_t *loop, const struct timespec* timeout) {
     if (loop->num_polls == 0)
         return;
 
@@ -193,25 +207,13 @@ void us_loop_run_bun_tick(struct us_loop_t *loop, int64_t timeoutMs) {
 
     /* Fetch ready polls */
 #ifdef LIBUS_USE_EPOLL
-    if (timeoutMs > 0) {
-        if (timeoutMs == INT64_MAX) {
-            timeoutMs = 0;
-        }
-        loop->num_ready_polls = epoll_wait(loop->fd, loop->ready_polls, 1024, (int)timeoutMs);
-    } else {
-        loop->num_ready_polls = epoll_wait(loop->fd, loop->ready_polls, 1024, -1);
+    int timeoutMs = -1; 
+    if (timeout) {
+        timeoutMs = timeout->tv_sec * 1000 + timeout->tv_nsec / 1000000;
     }
+    loop->num_ready_polls = epoll_wait(loop->fd, loop->ready_polls, 1024, timeoutMs);
 #else
-    if (timeoutMs > 0) {
-        struct timespec ts = {0, 0};
-        if (timeoutMs != INT64_MAX) {
-            ts.tv_sec = timeoutMs / 1000;
-            ts.tv_nsec = (timeoutMs % 1000) * 1000000;
-        }
-        loop->num_ready_polls = kevent64(loop->fd, NULL, 0, loop->ready_polls, 1024, 0, &ts);
-    } else {
-        loop->num_ready_polls = kevent64(loop->fd, NULL, 0, loop->ready_polls, 1024, 0, NULL);
-    }
+    loop->num_ready_polls = kevent64(loop->fd, NULL, 0, loop->ready_polls, 1024, 0, timeout);
 #endif
 
     /* Iterate ready polls, dispatching them by type */
@@ -225,14 +227,21 @@ void us_loop_run_bun_tick(struct us_loop_t *loop, int64_t timeoutMs) {
             }
 #ifdef LIBUS_USE_EPOLL
             int events = loop->ready_polls[loop->current_ready_poll].events;
-            int error = loop->ready_polls[loop->current_ready_poll].events & (EPOLLERR | EPOLLHUP);
+            const int error = events & (EPOLLERR | EPOLLHUP);
 #else
-            /* EVFILT_READ, EVFILT_TIME, EVFILT_USER are all mapped to LIBUS_SOCKET_READABLE */
-            int events = LIBUS_SOCKET_READABLE;
-            if (loop->ready_polls[loop->current_ready_poll].filter == EVFILT_WRITE) {
-                events = LIBUS_SOCKET_WRITABLE;
-            }
-            int error = loop->ready_polls[loop->current_ready_poll].flags & (EV_ERROR | EV_EOF);
+            const struct kevent64_s* current_kevent = &loop->ready_polls[loop->current_ready_poll];
+            const int16_t filter = current_kevent->filter;
+            const uint16_t flags = current_kevent->flags;
+            const uint32_t fflags = current_kevent->fflags;
+
+            // > Multiple events which trigger the filter do not result in multiple kevents being placed on the kqueue
+            // > Instead, the filter will aggregate the events into a single kevent struct
+            int events = 0
+                | ((filter & EVFILT_READ) ? LIBUS_SOCKET_READABLE : 0)
+                | ((filter & EVFILT_WRITE) ? LIBUS_SOCKET_WRITABLE : 0);
+
+            // Note: EV_ERROR only sets the error in data as part of changelist. Not in this call!
+            const int error = (flags & (EV_ERROR | EV_EOF)) ? ((int)fflags || 1) : 0;
 #endif
             /* Always filter all polls by what they actually poll for (callback polls always poll for readable) */
             events &= us_poll_events(poll);
@@ -540,8 +549,24 @@ struct us_internal_async *us_internal_create_async(struct us_loop_t *loop, int f
     }
 
     cb->machport_buf = us_malloc(MACHPORT_BUF_LEN);
-    kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &cb->port);
+    mach_port_t self = mach_task_self();
+    kern_return_t kr = mach_port_allocate(self, MACH_PORT_RIGHT_RECEIVE, &cb->port);
 
+    if (UNLIKELY(kr != KERN_SUCCESS)) {
+        return NULL;
+    }
+
+    // Insert a send right into the port since we also use this to send
+    kr = mach_port_insert_right(self, cb->port, cb->port, MACH_MSG_TYPE_MAKE_SEND);
+    if (UNLIKELY(kr != KERN_SUCCESS)) {
+        return NULL;
+    }
+
+    // Modify the port queue size to be 1 because we are only
+    // using it for notifications and not for any other purpose.
+    mach_port_limits_t limits = { .mpl_qlimit = 1 };
+    kr = mach_port_set_attributes(self, cb->port, MACH_PORT_LIMITS_INFO, (mach_port_info_t)&limits, MACH_PORT_LIMITS_INFO_COUNT);
+    
     if (UNLIKELY(kr != KERN_SUCCESS)) {
         return NULL;
     }
@@ -593,18 +618,44 @@ void us_internal_async_set(struct us_internal_async *a, void (*cb)(struct us_int
 
 void us_internal_async_wakeup(struct us_internal_async *a) {
     struct us_internal_callback_t *internal_cb = (struct us_internal_callback_t *) a;
-    mach_msg_empty_send_t message;
-    memset(&message, 0, sizeof(message));
-    message.header.msgh_size = sizeof(message);
-    message.header.msgh_bits = MACH_MSGH_BITS_REMOTE(MACH_MSG_TYPE_MAKE_SEND_ONCE);
-    message.header.msgh_remote_port = internal_cb->port;
-    kern_return_t kr = mach_msg_send(&message.header);
-    if (kr != KERN_SUCCESS) {
-        // If us_internal_async_wakeup is being called by other threads faster
-        // than the pump can dispatch work, the kernel message queue for the wakeup
-        // port can fill The kernel does return a SEND_ONCE right in the case of
-        // failure, which must be destroyed to avoid leaking.
-        mach_msg_destroy(&message.header);
+    mach_msg_header_t msg = {
+        .msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0),
+        .msgh_size = sizeof(mach_msg_header_t),
+        .msgh_remote_port = internal_cb->port,
+        .msgh_local_port = MACH_PORT_NULL,
+        .msgh_voucher_port = 0,
+        .msgh_id = 0,
+    };
+
+    mach_msg_return_t kr = mach_msg(
+        &msg,
+        MACH_SEND_MSG | MACH_SEND_TIMEOUT,
+        msg.msgh_size,
+        0,
+        MACH_PORT_NULL,
+        0, // Fail instantly if the port is full
+        MACH_PORT_NULL
+    );
+    
+    switch (kr) {
+        case KERN_SUCCESS: {
+            break;
+        }
+        
+        // This means that the send would've blocked because the
+        // queue is full. We assume success because the port is full.
+        case MACH_SEND_TIMED_OUT: {
+            break;
+        }
+
+        // No space means it will wake up.
+        case MACH_SEND_NO_BUFFER: {
+            break;
+        }
+
+        default: {
+            break;
+        }
     }
 }
 #endif

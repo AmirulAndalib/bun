@@ -1,9 +1,6 @@
-import assert from "assert";
-import dedent from "dedent";
-import { ESBUILD, itBundled, testForFile } from "./expectBundled";
+import { itBundled } from "./expectBundled";
 import { Database } from "bun:sqlite";
-import { fillRepeating } from "harness";
-var { describe, test, expect } = testForFile(import.meta.path);
+import { describe } from "bun:test";
 
 describe("bundler", () => {
   itBundled("compile/HelloWorld", {
@@ -13,6 +10,22 @@ describe("bundler", () => {
         console.log("Hello, world!");
       `,
     },
+    run: { stdout: "Hello, world!" },
+  });
+  // https://github.com/oven-sh/bun/issues/8697
+  itBundled("compile/EmbeddedFileOutfile", {
+    compile: true,
+    files: {
+      "/entry.ts": /* js */ `
+        import bar from './foo.file' with {type: "file"};
+        if ((await Bun.file(bar).text()).trim() !== "abcd") throw "fail";
+        console.log("Hello, world!");
+      `,
+      "/foo.file": /* js */ `
+      abcd
+    `.trim(),
+    },
+    outfile: "dist/out",
     run: { stdout: "Hello, world!" },
   });
   itBundled("compile/pathToFileURLWorks", {
@@ -90,7 +103,7 @@ describe("bundler", () => {
         );
 
         const port = 0;
-        const server = Bun.serve({
+        using server = Bun.serve({
           port,
           async fetch(req) {
             return new Response(await renderToReadableStream(<App />), headers);
@@ -99,7 +112,6 @@ describe("bundler", () => {
         const res = await fetch(server.url);
         if (res.status !== 200) throw "status error";
         console.log(await res.text());
-        server.stop(true);
       `,
     },
     run: {

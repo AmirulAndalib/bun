@@ -161,8 +161,8 @@ fn ws(comptime str: []const u8) Whitespacer {
                     buf_i += 1;
                 }
             }
-
-            break :brk buf[0..buf_i];
+            const final = buf[0..buf_i].*;
+            break :brk &final;
         };
     };
 
@@ -171,15 +171,27 @@ fn ws(comptime str: []const u8) Whitespacer {
 
 pub fn estimateLengthForJSON(input: []const u8, comptime ascii_only: bool) usize {
     var remaining = input;
-    var len: u32 = 2; // for quotes
+    var len: usize = 2; // for quotes
 
     while (strings.indexOfNeedsEscape(remaining)) |i| {
         len += i;
         remaining = remaining[i..];
         const char_len = strings.wtf8ByteSequenceLengthWithInvalid(remaining[0]);
-        const c = strings.decodeWTF8RuneT(remaining.ptr[0..4], char_len, i32, 0);
+        const c = strings.decodeWTF8RuneT(
+            &switch (char_len) {
+                // 0 is not returned by `wtf8ByteSequenceLengthWithInvalid`
+                1 => .{ remaining[0], 0, 0, 0 },
+                2 => remaining[0..2].* ++ .{ 0, 0 },
+                3 => remaining[0..3].* ++ .{0},
+                4 => remaining[0..4].*,
+                else => unreachable,
+            },
+            char_len,
+            i32,
+            0,
+        );
         if (canPrintWithoutEscape(i32, c, ascii_only)) {
-            len += @as(u32, char_len);
+            len += @as(usize, char_len);
         } else if (c <= 0xFFFF) {
             len += 6;
         } else {
@@ -187,7 +199,7 @@ pub fn estimateLengthForJSON(input: []const u8, comptime ascii_only: bool) usize
         }
         remaining = remaining[char_len..];
     } else {
-        return @as(u32, @truncate(remaining.len)) + 2;
+        return remaining.len + 2;
     }
 
     return len;
@@ -206,12 +218,28 @@ pub fn quoteForJSONBuffer(text: []const u8, bytes: *MutableString, comptime asci
     const n: usize = text.len;
     while (i < n) {
         const width = strings.wtf8ByteSequenceLengthWithInvalid(text[i]);
-        const c = strings.decodeWTF8RuneT(text.ptr[i .. i + 4][0..4], width, i32, 0);
+        const clamped_width = @min(@as(usize, width), n -| i);
+        const c = strings.decodeWTF8RuneT(
+            &switch (clamped_width) {
+                // 0 is not returned by `wtf8ByteSequenceLengthWithInvalid`
+                1 => .{ text[i], 0, 0, 0 },
+                2 => text[i..][0..2].* ++ .{ 0, 0 },
+                3 => text[i..][0..3].* ++ .{0},
+                4 => text[i..][0..4].*,
+                else => unreachable,
+            },
+            width,
+            i32,
+            0,
+        );
         if (canPrintWithoutEscape(i32, c, ascii_only)) {
-            const remain = text[i + @as(usize, width) ..];
+            const remain = text[i + clamped_width ..];
             if (strings.indexOfNeedsEscape(remain)) |j| {
-                try bytes.appendSlice(text[i .. i + j + @as(usize, width)]);
-                i += j + @as(usize, width);
+                const text_chunk = text[i .. i + clamped_width];
+                try bytes.appendSlice(text_chunk);
+                i += clamped_width;
+                try bytes.appendSlice(remain[0..j]);
+                i += j;
                 continue;
             } else {
                 try bytes.appendSlice(text[i..]);
@@ -315,9 +343,21 @@ const JSONFormatter = struct {
     }
 };
 
+const JSONFormatterUTF8 = struct {
+    input: []const u8,
+
+    pub fn format(self: JSONFormatterUTF8, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writeJSONString(self.input, @TypeOf(writer), writer, .utf8);
+    }
+};
+
 /// Expects latin1
 pub fn formatJSONString(text: []const u8) JSONFormatter {
-    return JSONFormatter{ .input = text };
+    return .{ .input = text };
+}
+
+pub fn formatJSONStringUTF8(text: []const u8) JSONFormatterUTF8 {
+    return .{ .input = text };
 }
 
 pub fn writeJSONString(input: []const u8, comptime Writer: type, writer: Writer, comptime encoding: strings.Encoding) !void {
@@ -343,13 +383,15 @@ pub fn writeJSONString(input: []const u8, comptime Writer: type, writer: Writer,
             } else break :brk strings.latin1ToCodepointAssumeNotASCII(char, i32);
         };
         if (canPrintWithoutEscape(i32, c, false)) {
-            const remain = text[@as(usize, width)..];
+            const remain = text[width..];
             if (encoding != .utf8 and width > 0) {
                 var codepoint_bytes: [4]u8 = undefined;
                 std.mem.writeInt(i32, &codepoint_bytes, c, .little);
                 try writer.writeAll(
                     codepoint_bytes[0..strings.encodeWTF8Rune(codepoint_bytes[0..4], c)],
                 );
+            } else if (encoding == .utf8) {
+                try writer.writeAll(text[0..width]);
             }
 
             if (strings.indexOfNeedsEscape(remain)) |j| {
@@ -446,18 +488,6 @@ pub fn writeJSONString(input: []const u8, comptime Writer: type, writer: Writer,
     try writer.writeAll("\"");
 }
 
-test "quoteForJSON" {
-    const allocator = default_allocator;
-    try std.testing.expectEqualStrings(
-        "\"I don't need any quotes.\"",
-        (try quoteForJSON("I don't need any quotes.", MutableString.init(allocator, 0) catch unreachable, false)).list.items,
-    );
-    try std.testing.expectEqualStrings(
-        "\"I need a quote for \\\"this\\\".\"",
-        (try quoteForJSON("I need a quote for \"this\".", MutableString.init(allocator, 0) catch unreachable, false)).list.items,
-    );
-}
-
 pub const SourceMapHandler = struct {
     ctx: *anyopaque,
     callback: Callback,
@@ -507,6 +537,7 @@ pub const Options = struct {
     minify_syntax: bool = false,
     transform_only: bool = false,
     inline_require_and_import_errors: bool = true,
+    has_run_symbol_renamer: bool = false,
 
     require_or_import_meta_for_source_callback: RequireOrImportMeta.Callback = .{},
 
@@ -742,6 +773,9 @@ fn NewPrinter(
 
         const Printer = @This();
 
+        /// When Printer is used as a io.Writer, this represents it's error type, aka nothing.
+        pub const Error = error{};
+
         /// The handling of binary expressions is convoluted because we're using
         /// iteration on the heap instead of recursion on the call stack to avoid
         /// stack overflow for deeply-nested ASTs. See the comments for the similar
@@ -912,7 +946,6 @@ fn NewPrinter(
 
         pub fn writeAll(p: *Printer, bytes: anytype) anyerror!void {
             p.print(bytes);
-            return;
         }
 
         pub fn writeByteNTimes(self: *Printer, byte: u8, n: usize) !void {
@@ -927,22 +960,23 @@ fn NewPrinter(
             }
         }
 
+        pub fn writeBytesNTimes(self: *Printer, bytes: []const u8, n: usize) anyerror!void {
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                try self.writeAll(bytes);
+            }
+        }
+
         fn fmt(p: *Printer, comptime str: string, args: anytype) !void {
             const len = @call(
-                .{
-                    .modifier = .always_inline,
-                },
+                .always_inline,
                 std.fmt.count,
                 .{ str, args },
             );
-            var ptr = try p.writer.reserveNext(
-                len,
-            );
+            var ptr = try p.writer.reserve(len);
 
             const written = @call(
-                .{
-                    .modifier = .always_inline,
-                },
+                .always_inline,
                 std.fmt.bufPrint,
                 .{ ptr[0..len], str, args },
             ) catch unreachable;
@@ -1365,7 +1399,6 @@ fn NewPrinter(
             if (comptime !generate_source_map) {
                 return;
             }
-
             printer.source_map_builder.addSourceMapping(location, printer.writer.slice());
         }
 
@@ -1373,8 +1406,6 @@ fn NewPrinter(
             if (comptime !generate_source_map) {
                 return;
             }
-
-            // TODO:
             printer.addSourceMapping(location);
         }
 
@@ -1509,7 +1540,7 @@ fn NewPrinter(
             const remainder: f64 = (float - floored);
             const is_integer = remainder == 0;
             if (float < std.math.maxInt(u52) and is_integer) {
-                @setFloatMode(.Optimized);
+                @setFloatMode(.optimized);
                 // In JavaScript, numbers are represented as 64 bit floats
                 // However, they could also be signed or unsigned int 32 (when doing bit shifts)
                 // In this case, it's always going to unsigned since that conversion has already happened.
@@ -1602,18 +1633,12 @@ fn NewPrinter(
                 return;
             }
 
-            std.fmt.formatFloatDecimal(
-                float,
-                .{},
-                p,
-            ) catch unreachable;
+            p.fmt("{d}", .{float}) catch {};
         }
 
         pub fn printQuotedUTF16(e: *Printer, text: []const u16, quote: u8) void {
             var i: usize = 0;
             const n: usize = text.len;
-
-            // e(text.len) catch unreachable;
 
             outer: while (i < n) {
                 const CodeUnitType = u32;
@@ -1621,7 +1646,6 @@ fn NewPrinter(
                 const c: CodeUnitType = text[i];
                 i += 1;
 
-                // TODO: here
                 switch (c) {
 
                     // Special-case the null character since it may mess with code written in C
@@ -2061,6 +2085,37 @@ fn NewPrinter(
             // Allow it to fail at runtime, if it should
             p.print("import(");
             p.printImportRecordPath(record);
+
+            switch (record.tag) {
+                .with_type_sqlite, .with_type_sqlite_embedded => {
+                    // we do not preserve "embed": "true" since it is not necessary
+                    p.printWhitespacer(ws(", { with: { type: \"sqlite\" } }"));
+                },
+                .with_type_text => {
+                    if (comptime is_bun_platform) {
+                        p.printWhitespacer(ws(", { with: { type: \"text\" } }"));
+                    }
+                },
+                .with_type_json => {
+                    // backwards compatibility: previously, we always stripped type json
+                    if (comptime is_bun_platform) {
+                        p.printWhitespacer(ws(", { with: { type: \"json\" } }"));
+                    }
+                },
+                .with_type_toml => {
+                    // backwards compatibility: previously, we always stripped type
+                    if (comptime is_bun_platform) {
+                        p.printWhitespacer(ws(", { with: { type: \"toml\" } }"));
+                    }
+                },
+                .with_type_file => {
+                    // backwards compatibility: previously, we always stripped type
+                    if (comptime is_bun_platform) {
+                        p.printWhitespacer(ws(", { with: { type: \"file\" } }"));
+                    }
+                },
+                else => {},
+            }
             p.print(")");
 
             if (leading_interior_comments.len > 0) {
@@ -2459,6 +2514,26 @@ fn NewPrinter(
                             p.printIndent();
                         }
                         p.printExpr(e.expr, .comma, ExprFlag.None());
+
+                        if (comptime is_bun_platform) {
+                            // since we previously stripped type, it is a breaking change to
+                            // enable this for non-bun platforms
+                            switch (e.type_attribute) {
+                                .none => {},
+                                .text => {
+                                    p.printWhitespacer(ws(", { with: { type: \"text\" } }"));
+                                },
+                                .json => {
+                                    p.printWhitespacer(ws(", { with: { type: \"json\" } }"));
+                                },
+                                .toml => {
+                                    p.printWhitespacer(ws(", { with: { type: \"toml\" } }"));
+                                },
+                                .file => {
+                                    p.printWhitespacer(ws(", { with: { type: \"file\" } }"));
+                                },
+                            }
+                        }
 
                         if (e.leading_interior_comments.len > 0) {
                             p.printNewline();
@@ -2875,29 +2950,54 @@ fn NewPrinter(
                 },
                 .e_number => |e| {
                     const value = e.value;
+                    p.addSourceMapping(expr.loc);
 
                     const absValue = @abs(value);
 
                     if (std.math.isNan(value)) {
                         p.printSpaceBeforeIdentifier();
-                        p.addSourceMapping(expr.loc);
+
                         p.print("NaN");
-                    } else if (std.math.isPositiveInf(value)) {
-                        p.printSpaceBeforeIdentifier();
-                        p.addSourceMapping(expr.loc);
-                        p.print("Infinity");
-                    } else if (std.math.isNegativeInf(value)) {
-                        if (level.gte(.prefix)) {
-                            p.addSourceMapping(expr.loc);
-                            p.print("(-Infinity)");
+                    } else if (std.math.isPositiveInf(value) or std.math.isNegativeInf(value)) {
+                        const wrap = ((!p.options.has_run_symbol_renamer or p.options.minify_syntax) and level.gte(.multiply)) or
+                            (std.math.isNegativeInf(value) and level.gte(.prefix));
+
+                        if (wrap) {
+                            p.print("(");
+                        }
+
+                        if (std.math.isNegativeInf(value)) {
+                            p.printSpaceBeforeOperator(.un_neg);
+                            p.print("-");
                         } else {
                             p.printSpaceBeforeIdentifier();
-                            p.addSourceMapping(expr.loc);
-                            p.print("(-Infinity)");
+                        }
+
+                        // If we are not running the symbol renamer, we must not print "Infinity".
+                        // Some code may assign `Infinity` to another idenitifier.
+                        //
+                        // We do not want:
+                        //
+                        //   const Infinity = 1 / 0
+                        //
+                        // to be transformed into:
+                        //
+                        //   const Infinity = Infinity
+                        //
+                        if (is_json or (!p.options.minify_syntax and p.options.has_run_symbol_renamer)) {
+                            p.print("Infinity");
+                        } else if (p.options.minify_whitespace) {
+                            p.print("1/0");
+                        } else {
+                            p.print("1 / 0");
+                        }
+
+                        if (wrap) {
+                            p.print(")");
                         }
                     } else if (!std.math.signbit(value)) {
                         p.printSpaceBeforeIdentifier();
-                        p.addSourceMapping(expr.loc);
+
                         p.printNonNegativeFloat(absValue);
 
                         // Remember the end of the latest number
@@ -2908,13 +3008,11 @@ fn NewPrinter(
                         // "!isNaN(value)" because we need this to be true for "-0" and "-0 < 0"
                         // is false.
                         p.print("(-");
-                        p.addSourceMapping(expr.loc);
                         p.printNonNegativeFloat(absValue);
                         p.print(")");
                     } else {
                         p.printSpaceBeforeOperator(Op.Code.un_neg);
                         p.print("-");
-                        p.addSourceMapping(expr.loc);
                         p.printNonNegativeFloat(absValue);
 
                         // Remember the end of the latest number
@@ -4723,9 +4821,35 @@ fn NewPrinter(
 
                     p.printImportRecordPath(record);
 
-                    if ((record.tag.loader() orelse options.Loader.file).isSQLite()) {
-                        // we do not preserve "embed": "true" since it is not necessary
-                        p.printWhitespacer(ws(" with { type: \"sqlite\" }"));
+                    switch (record.tag) {
+                        .with_type_sqlite, .with_type_sqlite_embedded => {
+                            // we do not preserve "embed": "true" since it is not necessary
+                            p.printWhitespacer(ws(" with { type: \"sqlite\" }"));
+                        },
+                        .with_type_text => {
+                            if (comptime is_bun_platform) {
+                                p.printWhitespacer(ws(" with { type: \"text\" }"));
+                            }
+                        },
+                        .with_type_json => {
+                            // backwards compatibility: previously, we always stripped type json
+                            if (comptime is_bun_platform) {
+                                p.printWhitespacer(ws(" with { type: \"json\" }"));
+                            }
+                        },
+                        .with_type_toml => {
+                            // backwards compatibility: previously, we always stripped type
+                            if (comptime is_bun_platform) {
+                                p.printWhitespacer(ws(" with { type: \"toml\" }"));
+                            }
+                        },
+                        .with_type_file => {
+                            // backwards compatibility: previously, we always stripped type
+                            if (comptime is_bun_platform) {
+                                p.printWhitespacer(ws(" with { type: \"file\" }"));
+                            }
+                        },
+                        else => {},
                     }
                     p.printSemicolonAfterStatement();
                 },
@@ -5358,8 +5482,8 @@ pub fn NewWriter(
     comptime writeAllFn: fn (ctx: *ContextType, buf: anytype) anyerror!usize,
     comptime getLastByte: fn (ctx: *const ContextType) u8,
     comptime getLastLastByte: fn (ctx: *const ContextType) u8,
-    comptime reserveNext: fn (ctx: *ContextType, count: u32) anyerror![*]u8,
-    comptime advanceBy: fn (ctx: *ContextType, count: u32) void,
+    comptime reserveNext: fn (ctx: *ContextType, count: u64) anyerror![*]u8,
+    comptime advanceBy: fn (ctx: *ContextType, count: u64) void,
 ) type {
     return struct {
         const Self = @This();
@@ -5415,11 +5539,11 @@ pub fn NewWriter(
             return @call(bun.callmod_inline, getLastLastByte, .{&writer.ctx});
         }
 
-        pub fn reserve(writer: *Self, count: u32) anyerror![*]u8 {
+        pub fn reserve(writer: *Self, count: u64) anyerror![*]u8 {
             return try reserveNext(&writer.ctx, count);
         }
 
-        pub fn advance(writer: *Self, count: u32) void {
+        pub fn advance(writer: *Self, count: u64) void {
             advanceBy(&writer.ctx, count);
             writer.written += @as(i32, @intCast(count));
         }
@@ -5480,14 +5604,14 @@ pub const DirectWriter = struct {
     handle: FileDescriptorType,
 
     pub fn write(writer: *DirectWriter, buf: []const u8) !usize {
-        return try std.os.write(writer.handle, buf);
+        return try std.posix.write(writer.handle, buf);
     }
 
     pub fn writeAll(writer: *DirectWriter, buf: []const u8) !void {
-        _ = try std.os.write(writer.handle, buf);
+        _ = try std.posix.write(writer.handle, buf);
     }
 
-    pub const Error = std.os.WriteError;
+    pub const Error = std.posix.WriteError;
 };
 
 // Unbuffered           653ms
@@ -5549,11 +5673,11 @@ const FileWriterInternal = struct {
         return this.last_bytes[0];
     }
 
-    pub fn reserveNext(_: *FileWriterInternal, count: u32) anyerror![*]u8 {
+    pub fn reserveNext(_: *FileWriterInternal, count: u64) anyerror![*]u8 {
         try buffer.growIfNeeded(count);
         return @as([*]u8, @ptrCast(&buffer.list.items.ptr[buffer.list.items.len]));
     }
-    pub fn advanceBy(this: *FileWriterInternal, count: u32) void {
+    pub fn advanceBy(this: *FileWriterInternal, count: u64) void {
         if (comptime Environment.isDebug) bun.assert(buffer.list.items.len + count <= buffer.list.capacity);
 
         buffer.list.items = buffer.list.items.ptr[0 .. buffer.list.items.len + count];
@@ -5584,22 +5708,22 @@ const FileWriterInternal = struct {
                     const remain = first.len + second.len;
                     const third: []const u8 = result[remain..];
 
-                    var vecs = [_]std.os.iovec_const{
+                    var vecs = [_]std.posix.iovec_const{
                         .{
-                            .iov_base = first.ptr,
-                            .iov_len = first.len,
+                            .base = first.ptr,
+                            .len = first.len,
                         },
                         .{
-                            .iov_base = second.ptr,
-                            .iov_len = second.len,
+                            .base = second.ptr,
+                            .len = second.len,
                         },
                         .{
-                            .iov_base = third.ptr,
-                            .iov_len = third.len,
+                            .base = third.ptr,
+                            .len = third.len,
                         },
                     };
 
-                    const written = try std.os.writev(ctx.file.handle, vecs[0..@as(usize, if (third.len > 0) 3 else 2)]);
+                    const written = try std.posix.writev(ctx.file.handle, vecs[0..@as(usize, if (third.len > 0) 3 else 2)]);
                     if (written == 0 or result.len - written == 0) return;
                     result = result[written..];
                 },
@@ -5668,11 +5792,12 @@ pub const BufferWriter = struct {
         return ctx.last_bytes[0];
     }
 
-    pub fn reserveNext(ctx: *BufferWriter, count: u32) anyerror![*]u8 {
+    pub fn reserveNext(ctx: *BufferWriter, count: u64) anyerror![*]u8 {
         try ctx.buffer.growIfNeeded(count);
         return @as([*]u8, @ptrCast(&ctx.buffer.list.items.ptr[ctx.buffer.list.items.len]));
     }
-    pub fn advanceBy(ctx: *BufferWriter, count: u32) void {
+
+    pub fn advanceBy(ctx: *BufferWriter, count: u64) void {
         if (comptime Environment.isDebug) bun.assert(ctx.buffer.list.items.len + count <= ctx.buffer.list.capacity);
 
         ctx.buffer.list.items = ctx.buffer.list.items.ptr[0 .. ctx.buffer.list.items.len + count];
@@ -5772,7 +5897,7 @@ pub fn getSourceMapBuilder(
     return .{
         .source_map = SourceMap.Chunk.Builder.SourceMapper.init(
             opts.allocator,
-            is_bun_platform,
+            is_bun_platform and generate_source_map == .lazy,
         ),
         .cover_lines_without_mappings = true,
         .approximate_input_line_count = tree.approximate_newline_count,

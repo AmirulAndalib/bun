@@ -2,7 +2,7 @@ const std = @import("std");
 const bun = @import("root").bun;
 const builtin = @import("builtin");
 const win32 = std.os.windows;
-const os = std.os;
+const posix = std.posix;
 const mem = std.mem;
 const Stat = std.fs.File.Stat;
 const Kind = std.fs.File.Kind;
@@ -818,7 +818,7 @@ pub const SystemErrno = enum(u16) {
         return labels.get(this) orelse null;
     }
 
-    const LabelMap = bun.enums.EnumMap(SystemErrno, []const u8);
+    const LabelMap = std.enums.EnumMap(SystemErrno, []const u8);
     pub const labels: LabelMap = brk: {
         var map: LabelMap = LabelMap.initFull("");
 
@@ -959,7 +959,7 @@ pub const SystemErrno = enum(u16) {
 };
 
 pub const off_t = i64;
-pub fn preallocate_file(_: os.fd_t, _: off_t, _: off_t) !void {}
+pub fn preallocate_file(_: posix.fd_t, _: off_t, _: off_t) !void {}
 
 const uv = @import("./deps/libuv.zig");
 
@@ -1431,3 +1431,5 @@ pub fn deleteOpenedFile(fd: bun.FileDescriptor) Maybe(void) {
 }
 
 pub extern fn windows_enable_stdio_inheritance() void;
+
+pub extern "c" fn quick_exit(code: c_int) noreturn;

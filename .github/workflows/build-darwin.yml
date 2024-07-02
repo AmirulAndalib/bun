@@ -28,7 +28,9 @@ on:
 
 env:
   LLVM_VERSION: 16
-  BUN_VERSION: 1.1.2
+  BUN_VERSION: 1.1.8
+  LC_CTYPE: "en_US.UTF-8"
+  LC_ALL: "en_US.UTF-8"
 
 jobs:
   build-submodules:
@@ -78,7 +80,8 @@ jobs:
             automake \
             openssl@1.1 \
             ninja \
-            gnu-sed --force
+            golang \
+            gnu-sed --force --overwrite
           echo "$(brew --prefix ccache)/bin" >> $GITHUB_PATH
           echo "$(brew --prefix coreutils)/libexec/gnubin" >> $GITHUB_PATH
           echo "$(brew --prefix llvm@$LLVM_VERSION)/bin" >> $GITHUB_PATH
@@ -134,7 +137,8 @@ jobs:
             automake \
             openssl@1.1 \
             ninja \
-            gnu-sed --force
+            golang \
+            gnu-sed --force --overwrite
           echo "$(brew --prefix ccache)/bin" >> $GITHUB_PATH
           echo "$(brew --prefix coreutils)/libexec/gnubin" >> $GITHUB_PATH
           echo "$(brew --prefix llvm@$LLVM_VERSION)/bin" >> $GITHUB_PATH
@@ -215,7 +219,8 @@ jobs:
             automake \
             openssl@1.1 \
             ninja \
-            gnu-sed --force
+            golang \
+            gnu-sed --force --overwrite
           echo "$(brew --prefix ccache)/bin" >> $GITHUB_PATH
           echo "$(brew --prefix coreutils)/libexec/gnubin" >> $GITHUB_PATH
           echo "$(brew --prefix llvm@$LLVM_VERSION)/bin" >> $GITHUB_PATH
@@ -260,7 +265,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DUSE_LTO=ON \
             -DBUN_LINK_ONLY=1 \
-            -DBUN_ZIG_OBJ="${{ runner.temp }}/release/bun-zig.o" \
+            -DBUN_ZIG_OBJ_DIR="${{ runner.temp }}/release" \
             -DBUN_CPP_ARCHIVE="${{ runner.temp }}/bun-cpp-obj/bun-cpp-objects.a" \
             -DBUN_DEPS_OUT_DIR="${{ runner.temp }}/bun-deps" \
             -DNO_CONFIGURE_DEPENDS=1
@@ -304,4 +309,4 @@ jobs:
 
             @${{ github.actor }}, the build for bun-${{ inputs.tag }} failed.
 
-            **[View logs](${{ github.event.workflow_run.html_url }})**
+            **[View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})**

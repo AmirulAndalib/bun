@@ -1,5 +1,6 @@
 // ** Update the version number when any breaking changes are made to the cache format or to the JS parser **
-const expected_version = 2;
+// Version 2 -> 3: "Infinity" becomes "1/0".
+const expected_version = 3;
 
 const bun = @import("root").bun;
 const std = @import("std");
@@ -153,7 +154,7 @@ pub const RuntimeTranspilerCache = struct {
             defer tracer.end();
 
             // atomically write to a tmpfile and then move it to the final destination
-            var tmpname_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
+            var tmpname_buf: bun.PathBuffer = undefined;
             const tmpfilename = bun.sliceTo(try bun.fs.FileSystem.instance.tmpname(std.fs.path.extension(destination_path.slice()), &tmpname_buf, input_hash), 0);
 
             const output_bytes = output_code.byteSlice();
@@ -227,13 +228,8 @@ pub const RuntimeTranspilerCache = struct {
                 if (bun.Environment.allow_assert) {
                     var total: usize = 0;
                     for (vecs) |v| {
-                        if (comptime bun.Environment.isWindows) {
-                            bun.assert(v.len > 0);
-                            total += v.len;
-                        } else {
-                            bun.assert(v.iov_len > 0);
-                            total += v.iov_len;
-                        }
+                        bun.assert(v.len > 0);
+                        total += v.len;
                     }
                     bun.assert(end_position == total);
                 }
@@ -365,7 +361,7 @@ pub const RuntimeTranspilerCache = struct {
     }
 
     pub fn getCacheFilePath(
-        buf: *[bun.MAX_PATH_BYTES]u8,
+        buf: *bun.PathBuffer,
         input_hash: u64,
     ) ![:0]const u8 {
         const cache_dir = try getCacheDir(buf);
@@ -376,7 +372,7 @@ pub const RuntimeTranspilerCache = struct {
         return buf[0 .. cache_dir.len + 1 + cache_filename_len :0];
     }
 
-    fn reallyGetCacheDir(buf: *[bun.MAX_PATH_BYTES]u8) [:0]const u8 {
+    fn reallyGetCacheDir(buf: *bun.PathBuffer) [:0]const u8 {
         if (comptime bun.Environment.isDebug) {
             bun_debug_restore_from_cache = bun.getenvZ("BUN_DEBUG_ENABLE_RESTORE_FROM_TRANSPILER_CACHE") != null;
         }
@@ -424,11 +420,11 @@ pub const RuntimeTranspilerCache = struct {
     }
 
     // Only do this at most once per-thread.
-    threadlocal var runtime_transpiler_cache_static_buffer: [bun.MAX_PATH_BYTES]u8 = undefined;
+    threadlocal var runtime_transpiler_cache_static_buffer: bun.PathBuffer = undefined;
     threadlocal var runtime_transpiler_cache: ?[:0]const u8 = null;
     pub var is_disabled = false;
 
-    fn getCacheDir(buf: *[bun.MAX_PATH_BYTES]u8) ![:0]const u8 {
+    fn getCacheDir(buf: *bun.PathBuffer) ![:0]const u8 {
         if (is_disabled) return error.CacheDisabled;
         const path = runtime_transpiler_cache orelse path: {
             const path = reallyGetCacheDir(&runtime_transpiler_cache_static_buffer);
@@ -454,7 +450,7 @@ pub const RuntimeTranspilerCache = struct {
         var tracer = bun.tracy.traceNamed(@src(), "RuntimeTranspilerCache.fromFile");
         defer tracer.end();
 
-        var cache_file_path_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
+        var cache_file_path_buf: bun.PathBuffer = undefined;
         const cache_file_path = try getCacheFilePath(&cache_file_path_buf, input_hash);
         bun.assert(cache_file_path.len > 0);
         return fromFileWithCacheFilePath(
@@ -476,7 +472,7 @@ pub const RuntimeTranspilerCache = struct {
         output_code_allocator: std.mem.Allocator,
     ) !Entry {
         var metadata_bytes_buf: [Metadata.size * 2]u8 = undefined;
-        const cache_fd = try bun.sys.open(cache_file_path.sliceAssumeZ(), std.os.O.RDONLY, 0).unwrap();
+        const cache_fd = try bun.sys.open(cache_file_path.sliceAssumeZ(), bun.O.RDONLY, 0).unwrap();
         defer _ = bun.sys.close(cache_fd);
         errdefer {
             // On any error, we delete the cache file
@@ -528,7 +524,7 @@ pub const RuntimeTranspilerCache = struct {
         var tracer = bun.tracy.traceNamed(@src(), "RuntimeTranspilerCache.toFile");
         defer tracer.end();
 
-        var cache_file_path_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
+        var cache_file_path_buf: bun.PathBuffer = undefined;
         const output_code: Entry.OutputCode = switch (source_code.encoding()) {
             .utf8 => .{ .utf8 = source_code.byteSlice() },
             else => .{ .string = source_code },
@@ -548,10 +544,10 @@ pub const RuntimeTranspilerCache = struct {
                 break :brk try bun.toLibUVOwnedFD(dir.fd);
             }
 
-            break :brk bun.toFD(std.fs.cwd().fd);
+            break :brk bun.FD.cwd();
         };
         defer {
-            if (cache_dir_fd != bun.toFD(std.fs.cwd().fd)) _ = bun.sys.close(cache_dir_fd);
+            if (cache_dir_fd != bun.FD.cwd()) _ = bun.sys.close(cache_dir_fd);
         }
 
         try Entry.save(

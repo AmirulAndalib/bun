@@ -14,7 +14,6 @@
     macro(SHA384) \
     macro(SHA512) \
     macro(SHA512_256) \
-    macro(ShellInterpreter) \
     macro(TOML) \
     macro(Transpiler) \
     macro(argv) \
@@ -48,6 +47,7 @@
     macro(inflateSync) \
     macro(jest) \
     macro(listen) \
+    macro(udpSocket) \
     macro(mmap) \
     macro(nanoseconds) \
     macro(openInEditor) \
@@ -64,6 +64,8 @@
     macro(write) \
     macro(stringWidth) \
     macro(shellEscape) \
+    macro(createShellInterpreter) \
+    macro(createParsedShellScript) \
 
 #define DECLARE_ZIG_BUN_OBJECT_CALLBACK(name) extern "C" JSC::EncodedJSValue BunObject_callback_##name(JSC::JSGlobalObject*, JSC::CallFrame*);
 FOR_EACH_CALLBACK(DECLARE_ZIG_BUN_OBJECT_CALLBACK);

@@ -199,8 +199,28 @@ pub const JSBundler = struct {
                 this.target = target;
             }
 
-            if (try config.getOptionalEnum(globalThis, "sourcemap", options.SourceMapOption)) |source_map| {
-                this.source_map = source_map;
+            var has_out_dir = false;
+            if (try config.getOptional(globalThis, "outdir", ZigString.Slice)) |slice| {
+                defer slice.deinit();
+                this.outdir.appendSliceExact(slice.slice()) catch unreachable;
+                has_out_dir = true;
+            }
+
+            if (config.getTruthy(globalThis, "sourcemap")) |source_map_js| {
+                if (bun.FeatureFlags.breaking_changes_1_2 and config.isBoolean()) {
+                    if (source_map_js == .true) {
+                        this.source_map = if (has_out_dir)
+                            .linked
+                        else
+                            .@"inline";
+                    }
+                } else if (!source_map_js.isEmptyOrUndefinedOrNull()) {
+                    this.source_map = try source_map_js.toEnum(
+                        globalThis,
+                        "sourcemap",
+                        options.SourceMapOption,
+                    );
+                }
             }
 
             if (try config.getOptionalEnum(globalThis, "format", options.Format)) |format| {
@@ -219,11 +239,6 @@ pub const JSBundler = struct {
 
             if (try config.getOptional(globalThis, "splitting", bool)) |hot| {
                 this.code_splitting = hot;
-            }
-
-            if (try config.getOptional(globalThis, "outdir", ZigString.Slice)) |slice| {
-                defer slice.deinit();
-                this.outdir.appendSliceExact(slice.slice()) catch unreachable;
             }
 
             if (config.getTruthy(globalThis, "minify")) |hot| {
@@ -310,7 +325,7 @@ pub const JSBundler = struct {
                 };
                 defer dir.close();
 
-                var rootdir_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
+                var rootdir_buf: bun.PathBuffer = undefined;
                 this.rootdir.appendSliceExact(try bun.getFdPath(bun.toFD(dir.fd), &rootdir_buf)) catch unreachable;
             }
 
@@ -390,7 +405,7 @@ pub const JSBundler = struct {
                 var define_iter = JSC.JSPropertyIterator(.{
                     .skip_empty_name = true,
                     .include_value = true,
-                }).init(globalThis, define.asObjectRef());
+                }).init(globalThis, define);
                 defer define_iter.deinit();
 
                 while (define_iter.next()) |prop| {
@@ -408,7 +423,7 @@ pub const JSBundler = struct {
                         val = JSC.ZigString.fromUTF8("\"\"");
                     }
 
-                    const key = prop.toOwnedSlice(bun.default_allocator) catch @panic("OOM");
+                    const key = prop.toOwnedSlice(bun.default_allocator) catch bun.outOfMemory();
 
                     // value is always cloned
                     const value = val.toSlice(bun.default_allocator);
@@ -423,7 +438,7 @@ pub const JSBundler = struct {
                 var loader_iter = JSC.JSPropertyIterator(.{
                     .skip_empty_name = true,
                     .include_value = true,
-                }).init(globalThis, loaders.asObjectRef());
+                }).init(globalThis, loaders);
                 defer loader_iter.deinit();
 
                 var loader_names = try allocator.alloc(string, loader_iter.len);
@@ -432,7 +447,7 @@ pub const JSBundler = struct {
                 errdefer allocator.free(loader_values);
 
                 while (loader_iter.next()) |prop| {
-                    if (!prop.hasPrefixChar('.') or prop.len < 2) {
+                    if (!prop.hasPrefixComptime(".") or prop.length() < 2) {
                         globalThis.throwInvalidArguments("loader property names must be file extensions, such as '.txt'", .{});
                         return error.JSException;
                     }
@@ -443,7 +458,7 @@ pub const JSBundler = struct {
                         Api.Loader,
                         options.Loader.api_names,
                     );
-                    loader_names[loader_iter.i] = prop.toOwnedSlice(bun.default_allocator) catch @panic("OOM");
+                    loader_names[loader_iter.i] = prop.toOwnedSlice(bun.default_allocator) catch bun.outOfMemory();
                 }
 
                 this.loaders = Api.LoaderMap{
@@ -1114,14 +1129,14 @@ pub const BuildArtifact = struct {
         this: *BuildArtifact,
         globalThis: *JSC.JSGlobalObject,
     ) callconv(.C) JSValue {
-        return ZigString.fromUTF8(this.path).toValueGC(globalThis);
+        return ZigString.fromUTF8(this.path).toJS(globalThis);
     }
 
     pub fn getLoader(
         this: *BuildArtifact,
         globalThis: *JSC.JSGlobalObject,
     ) callconv(.C) JSValue {
-        return ZigString.fromUTF8(@tagName(this.loader)).toValueGC(globalThis);
+        return ZigString.fromUTF8(@tagName(this.loader)).toJS(globalThis);
     }
 
     pub fn getHash(
@@ -1130,7 +1145,7 @@ pub const BuildArtifact = struct {
     ) callconv(.C) JSValue {
         var buf: [512]u8 = undefined;
         const out = std.fmt.bufPrint(&buf, "{any}", .{options.PathTemplate.hashFormatter(this.hash)}) catch @panic("Unexpected");
-        return ZigString.init(out).toValueGC(globalThis);
+        return ZigString.init(out).toJS(globalThis);
     }
 
     pub fn getSize(this: *BuildArtifact, globalObject: *JSC.JSGlobalObject) callconv(.C) JSValue {
@@ -1142,7 +1157,7 @@ pub const BuildArtifact = struct {
     }
 
     pub fn getOutputKind(this: *BuildArtifact, globalObject: *JSC.JSGlobalObject) callconv(.C) JSValue {
-        return ZigString.init(@tagName(this.output_kind)).toValueGC(globalObject);
+        return ZigString.init(@tagName(this.output_kind)).toJS(globalObject);
     }
 
     pub fn getSourceMap(this: *BuildArtifact, _: *JSC.JSGlobalObject) callconv(.C) JSValue {

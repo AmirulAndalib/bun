@@ -928,7 +928,7 @@ pub const H2FrameParser = struct {
                     continue;
                 }
 
-                const value = JSC.ZigString.fromUTF8(header.value).toValueGC(globalObject);
+                const value = JSC.ZigString.fromUTF8(header.value).toJS(globalObject);
 
                 if (current_value.jsType().isArray()) {
                     current_value.push(globalObject, value);
@@ -943,7 +943,7 @@ pub const H2FrameParser = struct {
             } else {
                 // TODO: check for well-known headers and use pre-allocated static strings (see lshpack.c)
                 const name = JSC.ZigString.fromUTF8(header.name);
-                const value = JSC.ZigString.fromUTF8(header.value).toValueGC(globalObject);
+                const value = JSC.ZigString.fromUTF8(header.value).toJS(globalObject);
                 headers.put(globalObject, &name, value);
             }
 
@@ -1981,16 +1981,15 @@ pub const H2FrameParser = struct {
 
         var encoded_size: usize = 0;
 
-        const headers_obj = headers_arg.asObjectRef();
         var iter = JSC.JSPropertyIterator(.{
             .skip_empty_name = false,
             .include_value = true,
-        }).init(globalObject, headers_obj);
+        }).init(globalObject, headers_arg);
         defer iter.deinit();
 
         // TODO: support CONTINUE for more headers if headers are too big
         while (iter.next()) |header_name| {
-            const name_slice = header_name.toSlice(bun.default_allocator);
+            const name_slice = header_name.toUTF8(bun.default_allocator);
             defer name_slice.deinit();
             const name = name_slice.slice();
 
@@ -2182,19 +2181,17 @@ pub const H2FrameParser = struct {
             return JSC.JSValue.jsNumber(-1);
         }
 
-        const headers_obj = headers_arg.asObjectRef();
-
         // we iterate twice, because pseudo headers must be sent first, but can appear anywhere in the headers object
         var iter = JSC.JSPropertyIterator(.{
             .skip_empty_name = false,
             .include_value = true,
-        }).init(globalObject, headers_obj);
+        }).init(globalObject, headers_arg);
         defer iter.deinit();
         for (0..2) |ignore_pseudo_headers| {
             iter.reset();
 
             while (iter.next()) |header_name| {
-                const name_slice = header_name.toSlice(bun.default_allocator);
+                const name_slice = header_name.toUTF8(bun.default_allocator);
                 defer name_slice.deinit();
                 const name = name_slice.slice();
 
