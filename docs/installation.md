@@ -14,7 +14,7 @@ Kernel version 5.6 or higher is strongly recommended, but the minimum is 5.1. Us
 ```bash#macOS/Linux_(curl)
 $ curl -fsSL https://bun.sh/install | bash # for macOS, Linux, and WSL
 # to install a specific version
-$ curl -fsSL https://bun.sh/install | bash -s "bun-v1.0.0"
+$ curl -fsSL https://bun.sh/install | bash -s "bun-v$BUN_LATEST_VERSION"
 ```
 
 ```bash#npm
@@ -94,7 +94,9 @@ $ bun --revision
 
 If you've installed Bun but are seeing a `command not found` error, you may have to manually add the installation directory (`~/.bun/bin`) to your `PATH`.
 
-{% details summary="How to add to your `PATH`" %}
+### How to add your `PATH`
+
+{% details summary="Linux / Mac" %}
 First, determine what shell you're using:
 
 ```sh
@@ -126,6 +128,26 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 
 {% /codetabs %}
 Save the file. You'll need to open a new shell/terminal window for the changes to take effect.
+
+{% /details %}
+
+{% details summary="Windows" %}
+First, determine if the bun binary is properly installed on your system:
+
+```pwsh
+& "$env:USERPROFILE\.bun\bin\bun" --version
+```
+
+If the command runs successfully but `bun --version` is not recognized, it means that bun is not in your system's `PATH`. To fix this, open a Powershell terminal and run the following command:
+
+```pwsh
+[System.Environment]::SetEnvironmentVariable(
+    "Path",
+    [System.Environment]::GetEnvironmentVariable("Path", "User") + ";$env:USERPROFILE\.bun\bin",
+    [System.EnvironmentVariableTarget]::User
+)
+```
+After running the command, restart your terminal and test with `bun --version`
 
 {% /details %}
 
@@ -166,10 +188,10 @@ Since Bun is a single binary, you can install older versions of Bun by re-runnin
 
 ### Installing a specific version of Bun on Linux/Mac
 
-To install a specific version of Bun, you can pass the git tag of the version you want to install to the install script, such as `bun-v1.1.6` or `bun-v1.1.1`.
+To install a specific version of Bun, you can pass the git tag of the version you want to install to the install script, such as `bun-v1.2.0` or `bun-v$BUN_LATEST_VERSION`.
 
 ```sh
-$ curl -fsSL https://bun.sh/install | bash -s "bun-v1.1.6"
+$ curl -fsSL https://bun.sh/install | bash -s "bun-v$BUN_LATEST_VERSION"
 ```
 
 ### Installing a specific version of Bun on Windows
@@ -178,7 +200,7 @@ On Windows, you can install a specific version of Bun by passing the version num
 
 ```sh
 # PowerShell:
-$ iex "& {$(irm https://bun.sh/install.ps1)} -Version 1.1.6"
+$ iex "& {$(irm https://bun.sh/install.ps1)} -Version $BUN_LATEST_VERSION"
 ```
 
 ## Downloading Bun binaries directly

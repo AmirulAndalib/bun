@@ -69,6 +69,8 @@ typedef struct BunString {
     // It's only truly zero-copy if it was already a WTFStringImpl (which it is if it came from JS and we didn't use ZigString)
     WTF::String toWTFString(ZeroCopyTag) const;
 
+    WTF::String transferToWTFString();
+
     // This one usually will clone the raw bytes.
     WTF::String toWTFString() const;
 
@@ -124,6 +126,7 @@ typedef struct SystemError {
     BunString message;
     BunString path;
     BunString syscall;
+    BunString hostname;
     int fd;
     BunString dest;
 } SystemError;
@@ -182,11 +185,11 @@ typedef struct ZigStackTrace {
 } ZigStackTrace;
 
 typedef struct ZigException {
-    unsigned char code;
+    unsigned char type;
     uint16_t runtime_type;
     int errno_;
     BunString syscall;
-    BunString code_;
+    BunString system_code;
     BunString path;
     BunString name;
     BunString message;
@@ -336,8 +339,8 @@ extern "C" JSC::EncodedJSValue Bun__runVirtualModule(
 extern "C" JSC::JSInternalPromise* Bun__transpileFile(
     void* bunVM,
     JSC::JSGlobalObject* global,
-    const BunString* specifier,
-    const BunString* referrer,
+    BunString* specifier,
+    BunString* referrer,
     const BunString* typeAttribute,
     ErrorableResolvedSource* result, bool allowPromise);
 
@@ -382,6 +385,7 @@ extern "C" size_t Bun__encoding__byteLengthUTF16(const UChar* ptr, size_t len, E
 extern "C" int64_t Bun__encoding__constructFromLatin1(void*, const unsigned char* ptr, size_t len, Encoding encoding);
 extern "C" int64_t Bun__encoding__constructFromUTF16(void*, const UChar* ptr, size_t len, Encoding encoding);
 
+/// @note throws a JS exception and returns false if a stack overflow occurs
 template<bool isStrict, bool enableAsymmetricMatchers>
 bool Bun__deepEquals(JSC::JSGlobalObject* globalObject, JSC::JSValue v1, JSC::JSValue v2, JSC::MarkedArgumentBuffer&, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, JSC::ThrowScope* scope, bool addToStack);
 
@@ -429,7 +433,7 @@ bool Bun__deepMatch(
     bool replacePropsWithAsymmetricMatchers,
     bool isMatchingObjectContaining);
 
-extern "C" void Bun__remapStackFramePositions(JSC::JSGlobalObject*, ZigStackFrame*, size_t);
+extern "C" void Bun__remapStackFramePositions(void*, ZigStackFrame*, size_t);
 
 namespace Inspector {
 class ScriptArguments;

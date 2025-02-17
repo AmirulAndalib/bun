@@ -13,7 +13,7 @@ const stringZ = bun.stringZ;
 const default_allocator = bun.default_allocator;
 const C = bun.C;
 const sync = @import("sync.zig");
-const Mutex = @import("./lock.zig").Lock;
+const Mutex = bun.Mutex;
 const Semaphore = sync.Semaphore;
 const Fs = @This();
 const path_handler = @import("./resolver/resolve_path.zig");
@@ -412,18 +412,18 @@ pub const FileSystem = struct {
 
     // }
     pub fn normalize(_: *@This(), str: string) string {
-        return @call(bun.callmod_inline, path_handler.normalizeString, .{ str, true, .auto });
+        return @call(bun.callmod_inline, path_handler.normalizeString, .{ str, true, bun.path.Platform.auto });
     }
 
     pub fn normalizeBuf(_: *@This(), buf: []u8, str: string) string {
-        return @call(bun.callmod_inline, path_handler.normalizeStringBuf, .{ str, buf, false, .auto, false });
+        return @call(bun.callmod_inline, path_handler.normalizeStringBuf, .{ str, buf, false, bun.path.Platform.auto, false });
     }
 
     pub fn join(_: *@This(), parts: anytype) string {
         return @call(bun.callmod_inline, path_handler.joinStringBuf, .{
             &join_buf,
             parts,
-            .loose,
+            bun.path.Platform.loose,
         });
     }
 
@@ -431,7 +431,7 @@ pub const FileSystem = struct {
         return @call(bun.callmod_inline, path_handler.joinStringBuf, .{
             buf,
             parts,
-            .loose,
+            bun.path.Platform.loose,
         });
     }
 
@@ -537,7 +537,7 @@ pub const FileSystem = struct {
                 .windows => win_tempdir_cache orelse {
                     const value = bun.getenvZ("TEMP") orelse bun.getenvZ("TMP") orelse brk: {
                         if (bun.getenvZ("SystemRoot") orelse bun.getenvZ("windir")) |windir| {
-                            break :brk bun.fmt.allocPrint(
+                            break :brk std.fmt.allocPrint(
                                 bun.default_allocator,
                                 "{s}\\Temp",
                                 .{strings.withoutTrailingSlash(windir)},
@@ -554,7 +554,7 @@ pub const FileSystem = struct {
                         var tmp_buf: bun.PathBuffer = undefined;
                         const cwd = std.posix.getcwd(&tmp_buf) catch @panic("Failed to get cwd for platformTempDir");
                         const root = bun.path.windowsFilesystemRoot(cwd);
-                        break :brk bun.fmt.allocPrint(
+                        break :brk std.fmt.allocPrint(
                             bun.default_allocator,
                             "{s}\\Windows\\Temp",
                             .{strings.withoutTrailingSlash(root)},
@@ -1517,6 +1517,10 @@ pub const PathName = struct {
     ext: string,
     filename: string,
 
+    pub fn extWithoutLeadingDot(self: *const PathName) string {
+        return if (self.ext.len > 0 and self.ext[0] == '.') self.ext[1..] else self.ext;
+    }
+
     pub fn nonUniqueNameStringBase(self: *const PathName) string {
         // /bar/foo/index.js -> foo
         if (self.dir.len > 0 and strings.eqlComptime(self.base, "index")) {
@@ -1713,15 +1717,20 @@ pub const Path = struct {
 
     pub fn isJSONCFile(this: *const Path) bool {
         const str = this.name.filename;
-        if (strings.eqlComptime(str, "package.json")) {
+
+        if (strings.eqlComptime(str, "package.json") or strings.eqlComptime(str, "bun.lock")) {
             return true;
         }
 
-        if (!(strings.hasPrefixComptime(str, "tsconfig.") or strings.hasPrefixComptime(str, "jsconfig."))) {
-            return false;
+        if (strings.hasSuffixComptime(str, ".jsonc")) {
+            return true;
         }
 
-        return strings.hasSuffixComptime(str, ".json");
+        if (strings.hasPrefixComptime(str, "tsconfig.") or strings.hasPrefixComptime(str, "jsconfig.")) {
+            return strings.hasSuffixComptime(str, ".json");
+        }
+
+        return false;
     }
 
     pub const PackageRelative = struct {
